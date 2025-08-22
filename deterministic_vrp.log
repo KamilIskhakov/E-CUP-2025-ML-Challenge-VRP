@@ -1,0 +1,6 @@
+2025-08-21 17:44:18,213 - numexpr.utils - INFO - NumExpr defaulting to 11 threads.
+2025-08-21 17:44:18,324 - ortools_solver - WARNING - OR-Tools не установлен
+2025-08-21 17:44:18,324 - pyomo_solver - WARNING - Pyomo не установлен
+2025-08-21 17:44:18,326 - __main__ - INFO - Запуск детерминированного VRP решателя
+2025-08-21 17:44:18,326 - __main__ - ERROR - Ошибка выполнения: Файл заказов не найден: ../ml_ozon_logistic/ml_ozon_logistic_dataSetOrders.json
+2025-08-21 17:44:18,326 - __main__ - INFO - Общее время выполнения: 0.00 секунд

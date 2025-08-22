@@ -1,0 +1,8 @@
+# Ignore data and dbs
+ml_ozon_logistic/
+logistic/
+logistics/
+*.sqlite
+**/*.sqlite
+*.db
+**/*.db
