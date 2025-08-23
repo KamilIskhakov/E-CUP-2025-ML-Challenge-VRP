@@ -9,23 +9,19 @@ import gc
 import sqlite3
 from pathlib import Path
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import polars as pl
-from utils import (
+from deterministic_vrp_solver.utils import (
     load_orders_data_lazy, load_couriers_data,
     aggregate_orders_by_polygon_lazy, calculate_polygon_portal,
     filter_polygons_by_size, optimize_polygon_processing_order
 )
-from polygon_optimizer import optimize_all_polygons_hybrid
-from distance_provider import SQLiteDistanceProvider
-from solver_factory import AssignmentSolverFactory
-from polygon_validator import PolygonValidator
-from route_optimizer import optimize_courier_routes
-from solution_generator import generate_solution
-from port_selector import select_polygon_ports
-from create_warehouse_ports_db import create_warehouse_ports_database
-from decomposed_distance_provider import DecomposedDistanceProvider
+from deterministic_vrp_solver.polygon.optimizer import optimize_all_polygons_hybrid
+from deterministic_vrp_solver.route_optimizer import optimize_courier_routes
+from deterministic_vrp_solver.solution_generator import generate_solution
+from deterministic_vrp_solver.decomposed_distance_provider import DecomposedDistanceProvider
+from deterministic_vrp_solver.reinforcement_scheduler import ReinforcementScheduler
 
 def get_fast_db_connection(db_path: str) -> sqlite3.Connection:
     """Быстрое подключение к SQLite"""
@@ -40,6 +36,43 @@ def get_fast_db_connection(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA page_size=4096")
     
     return conn
+
+def build_ports_database(ports_db_path: str, polygon_ports: dict, durations_conn: sqlite3.Connection) -> None:
+    """Создает БД расстояний между портами для выбранных портов полигонов."""
+    if os.path.exists(ports_db_path):
+        os.remove(ports_db_path)
+    conn = sqlite3.connect(ports_db_path)
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS port_distances (from_port INTEGER, to_port INTEGER, distance REAL)")
+    # Собираем уникальные порты
+    all_ports = sorted({p for ports in polygon_ports.values() for p in ports})
+    # Заполняем расстояния для всех пар портов
+    dcur = durations_conn.cursor()
+    for i, fp in enumerate(all_ports):
+        for tp in all_ports:
+            dcur.execute("SELECT d FROM dists WHERE f = ? AND t = ?", (fp, tp))
+            row = dcur.fetchone()
+            dist = row[0] if row and row[0] and row[0] > 0 else 0
+            cur.execute("INSERT INTO port_distances (from_port, to_port, distance) VALUES (?, ?, ?)", (fp, tp, dist))
+    conn.commit()
+    conn.close()
+
+def build_warehouse_ports_database(warehouse_ports_db_path: str, polygon_ports: dict, durations_conn: sqlite3.Connection) -> None:
+    """Создает БД расстояний от склада (ID=0) до каждого порта."""
+    if os.path.exists(warehouse_ports_db_path):
+        os.remove(warehouse_ports_db_path)
+    conn = sqlite3.connect(warehouse_ports_db_path)
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS warehouse_port_distances (port_id INTEGER PRIMARY KEY, distance REAL)")
+    all_ports = sorted({p for ports in polygon_ports.values() for p in ports})
+    dcur = durations_conn.cursor()
+    for port_id in all_ports:
+        dcur.execute("SELECT d FROM dists WHERE f = ? AND t = ?", (0, port_id))
+        row = dcur.fetchone()
+        dist = row[0] if row and row[0] and row[0] > 0 else 0
+        cur.execute("INSERT OR REPLACE INTO warehouse_port_distances (port_id, distance) VALUES (?, ?)", (port_id, dist))
+    conn.commit()
+    conn.close()
 
 def create_decomposed_test():
     """Создает тест с декомпозированной системой"""
@@ -60,10 +93,11 @@ def create_decomposed_test():
     start_time = time.time()
     
     try:
-        data_dir = Path("../ml_ozon_logistic")
+        root = Path(__file__).resolve().parent.parent
+        data_dir = root / "ml_ozon_logistic"
         orders_file = data_dir / "ml_ozon_logistic_dataSetOrders.json"
         couriers_file = data_dir / "ml_ozon_logistic_dataSetCouriers.json"
-        db_file = Path("../durations.sqlite")
+        db_file = root / "durations.sqlite"
         
         if not orders_file.exists():
             raise FileNotFoundError(f"Файл заказов не найден: {orders_file}")
@@ -115,29 +149,18 @@ def create_decomposed_test():
         logger.info(f"Отфильтровано {len(filtered_polygons)} полигонов для обработки")
         
         logger.info("=== Шаг 2: Выбор портов полигонов ===")
-        
-        # Создаем словарь заказов по полигонам для выбора портов
-        polygon_orders = {}
+        # Простая стратегия: берем до 3 точек-заказов как порты для каждого полигона
+        polygon_ports = {}
         for row in filtered_polygons.iter_rows(named=True):
-            polygon_orders[row['MpId']] = row['order_ids']
-        
-        # Выбираем порты для всех полигонов
-        ports_db_path = "ports_database.sqlite"
-        polygon_ports = select_polygon_ports(
-            polygon_orders=polygon_orders,
-            db_path=str(db_file),
-            output_path=ports_db_path,
-            max_ports_per_polygon=3
-        )
-        
+            order_ids = row['order_ids']
+            ports = order_ids[:3] if isinstance(order_ids, list) else []
+            polygon_ports[row['MpId']] = ports
+        ports_db_path = str(Path(__file__).resolve().parent / "data" / "ports_database.sqlite")
+        build_ports_database(ports_db_path, polygon_ports, conn)
+
         logger.info("=== Шаг 3: Создание БД расстояний от склада к портам ===")
-        
-        warehouse_ports_db_path = "warehouse_ports_database.sqlite"
-        create_warehouse_ports_database(
-            ports_database_path=ports_db_path,
-            durations_db_path=str(db_file),
-            output_path=warehouse_ports_db_path
-        )
+        warehouse_ports_db_path = str(Path(__file__).resolve().parent / "data" / "warehouse_ports_database.sqlite")
+        build_warehouse_ports_database(warehouse_ports_db_path, polygon_ports, conn)
         
         logger.info("=== Шаг 4: Оптимизация полигонов ===")
         
@@ -149,26 +172,28 @@ def create_decomposed_test():
             max_workers=1
         )
         
-        polygon_validator = PolygonValidator(max_time_per_courier=43200)
-        polygon_stats_info = polygon_validator.get_polygon_statistics(optimized_polygons)
-        
-        cost_distribution = polygon_validator.get_polygon_cost_distribution(optimized_polygons)
-        
+        # Статистика и фильтрация без PolygonValidator
+        q25 = optimized_polygons['total_cost'].quantile(0.25)
+        q50 = optimized_polygons['total_cost'].quantile(0.50)
+        q75 = optimized_polygons['total_cost'].quantile(0.75)
+        q90 = optimized_polygons['total_cost'].quantile(0.90)
         logger.info(f"Статистика стоимости полигонов:")
-        logger.info(f"   Q25: {cost_distribution['q25']:.0f} сек")
-        logger.info(f"   Q50: {cost_distribution['q50']:.0f} сек")
-        logger.info(f"   Q75: {cost_distribution['q75']:.0f} сек")
-        logger.info(f"   Q90: {cost_distribution['q90']:.0f} сек")
-        
-        unassignable_polygons = polygon_validator.get_unassignable_polygons(optimized_polygons)
-        if unassignable_polygons:
-            logger.warning(f"Найдено {len(unassignable_polygons)} неназначаемых полигонов")
-            optimized_polygons = polygon_validator.filter_assignable_polygons(optimized_polygons)
+        logger.info(f"   Q25: {q25:.0f} сек")
+        logger.info(f"   Q50: {q50:.0f} сек")
+        logger.info(f"   Q75: {q75:.0f} сек")
+        logger.info(f"   Q90: {q90:.0f} сек")
+        too_expensive = optimized_polygons.filter(pl.col('total_cost') > 43200)
+        if len(too_expensive) > 0:
+            logger.warning(f"Найдено {len(too_expensive)} полигонов дороже лимита")
+            optimized_polygons = optimized_polygons.filter(pl.col('total_cost') <= 43200)
             logger.info(f"После фильтрации осталось {len(optimized_polygons)} полигонов")
         
         logger.info(f"Оптимизировано {len(optimized_polygons)} полигонов")
         
         logger.info("Вычисление порталов полигонов...")
+        # Инициализируем колонку portal_id, т.к. оптимизация полигонов её не добавляет
+        if 'portal_id' not in optimized_polygons.columns:
+            optimized_polygons = optimized_polygons.with_columns(pl.lit(0).alias('portal_id'))
         
         # Загружаем только заказы для выбранных полигонов, исключая склад (MpId=0)
         selected_mp_ids = set(polygon_stats_300['MpId'].to_list())
@@ -300,20 +325,19 @@ def create_decomposed_test():
         logger.info(f"   Всего портов: {stats['total_ports']}")
         logger.info(f"   Среднее портов на полигон: {stats['avg_ports_per_polygon']:.2f}")
         
-        solver = AssignmentSolverFactory.create_solver(
-            solver_type='reinforcement',
-            distance_provider=decomposed_provider,
-            warehouse_id=0,  # Склад в матрице расстояний имеет ID=0
-            courier_service_times=courier_service_times
-        )
-        
         logger.info("Запуск RL алгоритма с декомпозированной системой...")
-        
-        # Исключаем склад (ID=0) из optimized_polygons перед передачей в solver
         optimized_polygons_filtered = optimized_polygons.filter(pl.col('MpId') != 0)
         logger.info(f"Исключен склад из полигонов: {len(optimized_polygons)} -> {len(optimized_polygons_filtered)}")
-        
-        assignment = solver.solve(optimized_polygons_filtered, couriers_df, max_time_per_courier=43200)
+        scheduler = ReinforcementScheduler(
+            optimized_polygons_filtered,
+            couriers_df,
+            max_time_per_courier=43200,
+            distance_provider=decomposed_provider,
+            courier_service_times=courier_service_times,
+            use_parallel=True,
+            num_workers=4,
+        )
+        assignment = scheduler.solve(optimized_polygons_filtered, couriers_df, max_time_per_courier=43200)
         
         total_assigned = sum(len(polygons) for polygons in assignment.values())
         active_couriers = sum(1 for polygons in assignment.values() if polygons)
