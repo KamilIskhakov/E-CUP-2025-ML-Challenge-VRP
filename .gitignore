@@ -1,6 +1,9 @@
 # Byte-compiled / cache
 __pycache__/
 *.py[cod]
+# Global patterns (all subfolders)
+**/__pycache__/
+**/*.py[cod]
 
 # Logs
 *.log
