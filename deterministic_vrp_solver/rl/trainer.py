@@ -53,25 +53,25 @@ class RLTrainer:
         step_count = 0
         experience_buffer: List[Tuple[str, int, float, str]] = []
 
-        # Избегаем множественных вызовов get_available_actions на каждом шаге для всех курьеров
+                                                                                               
         no_action_couriers = set()
         while not env_copy.is_episode_finished() and step_count < max_steps_per_episode:
             step_count += 1
-            # Курьеры, которые ещё не исчерпаны по времени и не помечены как бездействующие
+                                                                                           
             active_couriers = [cid for cid, c in env_copy.courier_states.items() if c.current_time < env_copy.max_time_per_courier and cid not in no_action_couriers]
             if not active_couriers:
                 break
-            # Берём наименее загруженного по времени
+                                                    
             courier_id = min(active_couriers, key=lambda cid: env_copy.courier_states[cid].current_time)
-            # Проверяем доступные действия только для выбранного курьера
+                                                                        
             actions = env_copy.get_available_actions(courier_id)
             if not actions:
-                # Больше нечего делать этому курьеру в рамках ограничений
+                                                                         
                 no_action_couriers.add(courier_id)
                 continue
             result = self.agent.act(env_copy, courier_id)
             if result is None:
-                # На случай гонки состояний
+                                           
                 no_action_couriers.add(courier_id)
                 continue
             current_state, action, reward, next_state = result

@@ -20,11 +20,11 @@ def calculate_reward(
     - штраф за текущие нарушения (подталкивает к балансировке)
     - лёгкая справедливость (выравнивание загрузки)
     """
-    # Масштабы подбираем так, чтобы совпадать по порядку с calculate_global_objective
-    w_orders = 1.0  # бонус за покрытие
-    w_time = 1.0 / 1500.0  # штраф за время шага
-    w_remaining = -0.5  # каждый оставшийся полигон плохо
-    w_viol = -50.0  # текущее число нарушений сильно плохо
+                                                                                     
+    w_orders = 1.0                     
+    w_time = 1.0 / 1500.0                       
+    w_remaining = -0.5                                   
+    w_viol = -50.0                                        
 
     coverage_bonus = w_orders * max(0, orders)
     time_penalty = w_time * max(0.0, float(total_time))
@@ -39,7 +39,7 @@ def calculate_reward(
     else:
         over_penalty = 0.0
 
-    # Небольшой градиент к уменьшению остатка и нарушений
+                                                         
     remaining_term = w_remaining * float(max(0, remaining_polygons))
     violation_term = w_viol * float(max(0, violations))
 

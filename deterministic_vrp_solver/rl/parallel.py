@@ -3,7 +3,7 @@ from typing import Dict, List, Tuple, Any
 
 
 def _worker_train(process_data: Dict) -> Dict[str, Any]:
-    # Локальные импорты внутри процесса
+                                       
     import polars as pl
     from deterministic_vrp_solver.decomposed_distance_provider import DecomposedDistanceProvider
     from .scheduler import ReinforcementScheduler
@@ -32,7 +32,7 @@ def _worker_train(process_data: Dict) -> Dict[str, Any]:
     try:
         assignment = scheduler.train(episodes=episodes, max_steps_per_episode=max_steps)
         objective = float('inf')
-        # Точная оценка: симулируем эпизод по assignment
+                                                        
         if assignment:
             env = scheduler.environment
             objective = float(env.evaluate_assignment(assignment))
@@ -47,7 +47,7 @@ class ParallelTrainer:
 
     def run(self, episodes: int, max_steps: int, num_workers: int = 2) -> Tuple[Dict[int, List[int]], float]:
         if num_workers <= 1 or episodes <= num_workers:
-            # Нечего параллелить
+                                
             return {}, float('inf')
         batch = max(1, episodes // num_workers)
         tasks: List[Dict] = []

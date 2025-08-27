@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+                      
 
 import sqlite3
 import logging
@@ -15,27 +15,29 @@ class DecomposedDistanceProvider:
         self.ports_db_path = ports_db_path
         self.warehouse_ports_db_path = warehouse_ports_db_path
         
-        # Соединения с БД
+                         
         self.durations_conn = None
         self.ports_conn = None
         self.warehouse_ports_conn = None
         
-        # Агрессивное кэширование для максимального ускорения
+                                                             
         self.durations_cache = {}
         self.ports_cache = {}
         self.warehouse_ports_cache = {}
-        self.access_cost_cache = {}  # Кэш для get_polygon_access_cost
-        self.best_port_cache = {}    # Кэш для find_best_port_to_polygon
+        self.access_cost_cache = {}                                   
+        self.best_port_cache = {}                                       
         
-        # Информация о полигонах
-        self.polygon_info = {}  # {polygon_id: {'ports': [], 'cost': float, 'portal_distances': {}}}
+                                
+        self.polygon_info = {}                                                                      
+                                                              
+        self.warehouse_id = 0
         
     def __enter__(self):
         self.durations_conn = sqlite3.connect(self.durations_db_path)
         self.ports_conn = sqlite3.connect(self.ports_db_path)
         self.warehouse_ports_conn = sqlite3.connect(self.warehouse_ports_db_path)
         
-        # Оптимизация SQLite
+                            
         for conn in [self.durations_conn, self.ports_conn, self.warehouse_ports_conn]:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
@@ -54,6 +56,10 @@ class DecomposedDistanceProvider:
     def set_polygon_info(self, polygon_info: Dict):
         """Установить информацию о полигонах"""
         self.polygon_info = polygon_info
+    
+    def set_warehouse_id(self, warehouse_id: int) -> None:
+        """Установить ID склада для правильной логики доступа/расстояний"""
+        self.warehouse_id = int(warehouse_id)
     
     def get_distance_between_polygons(self, from_polygon_id: int, to_polygon_id: int) -> float:
         """Получить расстояние между полигонами (через durations.sqlite)"""
@@ -79,7 +85,7 @@ class DecomposedDistanceProvider:
                 (from_port, to_port)
             )
             result = cursor.fetchone()
-            distance = result[0] if result else float('inf')
+            distance = result[0] if (result and result[0] and result[0] > 0) else float('inf')
             self.ports_cache[key] = distance
         return self.ports_cache[key]
     
@@ -92,9 +98,17 @@ class DecomposedDistanceProvider:
                 (port_id,)
             )
             result = cursor.fetchone()
-            distance = result[0] if result and result[0] is not None and result[0] > 0 else float('inf')
+            distance = result[0] if result and result[0] and result[0] > 0 else float('inf')
             self.warehouse_ports_cache[port_id] = distance
         return self.warehouse_ports_cache[port_id]
+
+    def get_polygon_portal(self, polygon_id: int) -> Optional[int]:
+        info = self.polygon_info.get(int(polygon_id), {})
+        portal_id = info.get('portal_id', None)
+        try:
+            return int(portal_id) if portal_id is not None else None
+        except Exception:
+            return None
     
     def get_polygon_ports(self, polygon_id: int) -> List[int]:
         """Получить порты полигона"""
@@ -110,69 +124,35 @@ class DecomposedDistanceProvider:
         return portal_distances.get(port_id, float('inf'))
     
     def find_best_port_to_polygon(self, from_position: int, target_polygon_id: int) -> Tuple[int, float]:
-        """Найти лучший порт для входа в полигон с кэшированием"""
-        
-        # Проверяем кэш
+        """Возвращает единственную точку входа — портал полигона, и расстояние до него из durations."""
         cache_key = (from_position, target_polygon_id)
         if cache_key in self.best_port_cache:
             return self.best_port_cache[cache_key]
-        
-        target_ports = self.get_polygon_ports(target_polygon_id)
-        if not target_ports:
+        portal_id = self.get_polygon_portal(int(target_polygon_id))
+        if portal_id is None:
             result = (None, float('inf'))
-            self.best_port_cache[cache_key] = result
-            return result
-        
-        best_port = None
-        best_distance = float('inf')
-        
-        for port_id in target_ports:
-            if from_position == 0:  # Склад имеет ID=0
-                # Расстояние от склада до порта
-                distance = self.get_distance_from_warehouse_to_port(port_id)
-            else:
-                # Сначала пробуем расстояние между портами
-                distance = self.get_distance_between_ports(from_position, port_id)
-                
-                # Если расстояние слишком большое, пробуем прямое расстояние из основной БД
-                if distance >= float('inf') or distance > 10000:  # Если больше 2.8 часов
-                    direct_distance = self.get_original_distance(from_position, port_id)
-                    if direct_distance < float('inf') and direct_distance < distance:
-                        distance = direct_distance
-            
-            if distance < best_distance:
-                best_distance = distance
-                best_port = port_id
-        
-        result = (best_port, best_distance)
+        else:
+            distance = self.get_original_distance(int(from_position), int(portal_id))
+            result = (int(portal_id), float(distance))
         self.best_port_cache[cache_key] = result
         return result
     
     def get_polygon_access_cost(self, from_position: int, polygon_id: int, 
                                service_time: float = 0) -> float:
-        """Получить стоимость доступа к полигону с агрессивным кэшированием"""
-        
-        # Проверяем кэш
+        """Стоимость доступа к полигону: от текущей позиции до портала полигона (durations) + TSP + сервис."""
         cache_key = (from_position, polygon_id, service_time)
         if cache_key in self.access_cost_cache:
             return self.access_cost_cache[cache_key]
-        
-        # Находим лучший порт для входа
-        best_port, port_distance = self.find_best_port_to_polygon(from_position, polygon_id)
-        
-        if port_distance >= float('inf'):
+        portal_id = self.get_polygon_portal(int(polygon_id))
+        if portal_id is None:
             result = float('inf')
         else:
-            # Расстояние от порта до центрального пункта полигона (портала)
-            portal_distance = self.get_portal_distance(polygon_id, best_port)
-            
-            # Базовая стоимость полигона (TSP)
-            polygon_cost = self.get_polygon_cost(polygon_id)
-            
-            # Общая стоимость = путь к порту + путь к центру + стоимость полигона + сервисное время
-            result = port_distance + portal_distance + polygon_cost + service_time
-        
-        # Сохраняем в кэш
+            to_portal = self.get_original_distance(int(from_position), int(portal_id))
+            if to_portal >= float('inf'):
+                result = float('inf')
+            else:
+                polygon_cost = self.get_polygon_cost(int(polygon_id))
+                result = float(to_portal) + float(polygon_cost) + float(service_time)
         self.access_cost_cache[cache_key] = result
         return result
     

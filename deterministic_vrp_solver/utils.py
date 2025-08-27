@@ -6,7 +6,7 @@ import polars as pl
 import numpy as np
 from pathlib import Path
 
-# Настройка логирования
+                       
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -21,7 +21,7 @@ def load_orders_data(file_path: str) -> pl.DataFrame:
     """Загрузка данных о заказах с использованием lazy API"""
     logger.info(f"Загрузка данных о заказах из {file_path}")
     
-    # Используем read_json для загрузки (scan_json недоступен)
+                                                              
     orders_df = (pl.read_json(file_path)
         .explode('Orders')
         .unnest('Orders')
@@ -35,13 +35,13 @@ def load_couriers_data(file_path: str) -> Tuple[pl.DataFrame, Dict]:
     """Загрузка данных о курьерах и складе"""
     logger.info(f"Загрузка данных о курьерах из {file_path}")
     
-    # Используем Polars для более эффективной загрузки
+                                                      
     data_df = pl.read_json(file_path)
     
-    # Извлекаем курьеров
+                        
     couriers_df = data_df.select('Couriers').explode('Couriers').unnest('Couriers')
     
-    # Извлекаем информацию о складе
+                                   
     warehouse_info = data_df.select('Warehouse').item(0, 'Warehouse')
     
     logger.info(f"Загружено {len(couriers_df)} курьеров")
@@ -56,12 +56,12 @@ def get_distance_matrix(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA cache_size=1000000")  # Увеличиваем кэш
+    conn.execute("PRAGMA cache_size=1000000")                   
     conn.execute("PRAGMA temp_store=MEMORY")
-    conn.execute("PRAGMA mmap_size=1073741824")  # 1GB mmap
-    conn.execute("PRAGMA page_size=65536")  # Увеличиваем размер страницы
+    conn.execute("PRAGMA mmap_size=1073741824")            
+    conn.execute("PRAGMA page_size=65536")                               
     
-    # Проверяем, есть ли уже индексы
+                                    
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_from_to'")
     if not cursor.fetchone():
@@ -83,14 +83,14 @@ def get_distance(conn: sqlite3.Connection, from_id: int, to_id: int) -> int:
     )
     result = cursor.fetchone()
     distance = result[0] if result else 0
-    # Если расстояние 0, значит нет пути - возвращаем большое значение
+                                                                      
     return distance if distance > 0 else 999999
 
 def get_distances_batch(conn: sqlite3.Connection, from_ids: List[int], to_ids: List[int]) -> List[int]:
     """Получение расстояний для батча точек"""
     cursor = conn.cursor()
     
-    # Создаем временную таблицу для быстрого поиска
+                                                   
     cursor.execute("""
         CREATE TEMP TABLE IF NOT EXISTS temp_from (id INTEGER PRIMARY KEY)
     """)
@@ -98,11 +98,11 @@ def get_distances_batch(conn: sqlite3.Connection, from_ids: List[int], to_ids: L
         CREATE TEMP TABLE IF NOT EXISTS temp_to (id INTEGER PRIMARY KEY)
     """)
     
-    # Вставляем данные
+                      
     cursor.executemany("INSERT OR REPLACE INTO temp_from (id) VALUES (?)", [(id,) for id in from_ids])
     cursor.executemany("INSERT OR REPLACE INTO temp_to (id) VALUES (?)", [(id,) for id in to_ids])
     
-    # Выполняем запрос
+                      
     cursor.execute("""
         SELECT d.d 
         FROM dists d
@@ -113,7 +113,7 @@ def get_distances_batch(conn: sqlite3.Connection, from_ids: List[int], to_ids: L
     
     results = [row[0] for row in cursor.fetchall()]
     
-    # Очищаем временные таблицы
+                               
     cursor.execute("DELETE FROM temp_from")
     cursor.execute("DELETE FROM temp_to")
     
@@ -123,7 +123,7 @@ def aggregate_orders_by_polygon(orders_df: pl.DataFrame) -> pl.DataFrame:
     """Агрегация заказов по микрополигонам с использованием lazy API"""
     logger.info("Агрегация заказов по микрополигонам (lazy API)")
     
-    # Используем lazy API для более эффективной обработки
+                                                         
     polygon_stats = (orders_df
         .lazy()
         .group_by("MpId")
@@ -144,7 +144,7 @@ def aggregate_orders_by_polygon_lazy(orders_lf: pl.LazyFrame) -> pl.DataFrame:
     """Агрегация заказов по микрополигонам (полностью lazy)"""
     logger.info("Агрегация заказов по микрополигонам (полностью lazy)")
     
-    # Полностью lazy обработка
+                              
     polygon_stats = (orders_lf
         .group_by("MpId")
         .agg([
@@ -165,36 +165,60 @@ def calculate_polygon_portal(conn: sqlite3.Connection, order_ids: List[int], lat
     if len(order_ids) == 1:
         return order_ids[0]
     
-    # Вычисляем среднее расстояние от каждой точки до всех остальных
-    min_avg_distance = float('inf')
-    portal_id = order_ids[0]
-    
-    for i, point_id in enumerate(order_ids):
-        total_distance = 0
-        count = 0
-        
-        for j, other_id in enumerate(order_ids):
-            if i != j:
+                                                                                                     
+    reachable_candidates = []
+    unreachable_candidates = []
+    for pid in order_ids:
+        d0 = get_distance(conn, 0, pid)
+        if d0 > 0 and d0 < 10**12 and d0 != 999999:
+            reachable_candidates.append(pid)
+        else:
+            unreachable_candidates.append(pid)
+
+    def best_by_internal_avg(candidates: List[int]) -> int:
+        min_avg_distance = float('inf')
+        best_pid = candidates[0]
+        for i, point_id in enumerate(candidates):
+            total_distance = 0.0
+            count = 0
+            for other_id in order_ids:
+                if other_id == point_id:
+                    continue
                 distance = get_distance(conn, point_id, other_id)
                 total_distance += distance
                 count += 1
-        
-        avg_distance = total_distance / count if count > 0 else 0
-        
-        if avg_distance < min_avg_distance:
-            min_avg_distance = avg_distance
-            portal_id = point_id
-    
-    return portal_id
+            avg_distance = total_distance / count if count > 0 else float('inf')
+            if avg_distance < min_avg_distance:
+                min_avg_distance = avg_distance
+                best_pid = point_id
+        return best_pid
+
+    if reachable_candidates:
+                                                                                                              
+        portal = best_by_internal_avg(reachable_candidates)
+                             
+        best = portal
+        best_d0 = get_distance(conn, 0, portal)
+        for pid in reachable_candidates:
+            if pid == best:
+                continue
+            d0 = get_distance(conn, 0, pid)
+            if d0 < best_d0:
+                best = pid
+                best_d0 = d0
+        return best
+    else:
+                                                                                        
+        return best_by_internal_avg(order_ids)
 
 def validate_solution(routes: List[Dict], orders_df: pl.DataFrame, max_time: int = 43200) -> bool:
     """Валидация решения"""
     logger.info("Валидация решения")
     
-    # Проверяем, что все заказы назначены
+                                         
     assigned_orders = set()
     for route in routes:
-        assigned_orders.update(route['route'][1:-1])  # Исключаем склад (0)
+        assigned_orders.update(route['route'][1:-1])                       
     
     all_orders = set(orders_df['ID'].to_list())
     unassigned = all_orders - assigned_orders
@@ -203,7 +227,7 @@ def validate_solution(routes: List[Dict], orders_df: pl.DataFrame, max_time: int
         logger.warning(f"Неназначенные заказы: {len(unassigned)}")
         return False
     
-    # Проверяем дубли
+                     
     if len(assigned_orders) != len(all_orders):
         logger.error("Обнаружены дубли заказов")
         return False
@@ -215,7 +239,7 @@ def validate_solution_lazy(routes: List[Dict], orders_lf: pl.LazyFrame, max_time
     """Валидация решения с использованием lazy API"""
     logger.info("Валидация решения (lazy)")
     
-    # Получаем все ID заказов через lazy API
+                                            
     all_orders = (orders_lf
         .select('ID')
         .collect()
@@ -223,10 +247,10 @@ def validate_solution_lazy(routes: List[Dict], orders_lf: pl.LazyFrame, max_time
         .to_list()
     )
     
-    # Проверяем, что все заказы назначены
+                                         
     assigned_orders = set()
     for route in routes:
-        assigned_orders.update(route['route'][1:-1])  # Исключаем склад (0)
+        assigned_orders.update(route['route'][1:-1])                       
     
     unassigned = set(all_orders) - assigned_orders
     
@@ -234,7 +258,7 @@ def validate_solution_lazy(routes: List[Dict], orders_lf: pl.LazyFrame, max_time
         logger.warning(f"Неназначенные заказы: {len(unassigned)}")
         return False
     
-    # Проверяем дубли
+                     
     if len(assigned_orders) != len(all_orders):
         logger.error("Обнаружены дубли заказов")
         return False
@@ -255,23 +279,23 @@ def save_solution(routes: List[Dict], output_path: str = "solution.json"):
 
 def calculate_route_time(route: List[int], conn: sqlite3.Connection, service_times: Dict[int, Dict[int, int]]) -> int:
     """Вычисление времени маршрута"""
-    if len(route) < 3:  # Только склад
+    if len(route) < 3:                
         return 0
     
     total_time = 0
     
-    # Время перемещения между точками
+                                     
     for i in range(len(route) - 1):
         from_id = route[i]
         to_id = route[i + 1]
         distance = get_distance(conn, from_id, to_id)
         total_time += distance
     
-    # Сервисное время в точках (кроме склада)
-    for order_id in route[1:-1]:  # Исключаем склад в начале и конце
-        # Находим курьера и MpId для заказа (упрощенно)
-        # В реальной реализации нужно передавать эту информацию
-        service_time = 0  # УБИРАЕМ ЗАГЛУШКИ! Получаем из реальных данных курьера
+                                             
+    for order_id in route[1:-1]:                                    
+                                                       
+                                                               
+        service_time = 0                                                         
         total_time += service_time
     
     return total_time
@@ -280,7 +304,7 @@ def load_orders_data_lazy(file_path: str) -> pl.LazyFrame:
     """Загрузка данных о заказах в lazy режиме"""
     logger.info(f"Загрузка данных о заказах (lazy) из {file_path}")
     
-    # Используем read_json и конвертируем в LazyFrame
+                                                     
     orders_df = pl.read_json(file_path)
     orders_lf = (orders_df
         .explode('Orders')
@@ -331,7 +355,7 @@ def optimize_polygon_processing_order(polygon_stats: pl.DataFrame) -> pl.DataFra
     
     optimized_order = (polygon_stats
         .lazy()
-        .sort('order_count')  # Сначала обрабатываем маленькие полигоны
+        .sort('order_count')                                           
         .collect()
     )
     

@@ -38,7 +38,7 @@ class VRPEnvironment:
         self.cost_cache: Dict[Tuple[int, int, int], float] = {}
         self.top_k_actions = 10
         self.candidate_pool_size = 200
-        self._static_utility_sorted: List[int] = []  # предсортированный список polygon_id по статической полезности
+        self._static_utility_sorted: List[int] = []                                                                 
         for row in polygons_df.iter_rows(named=True):
             mp = row['MpId']
             self.polygon_info[mp] = PolygonInfo(
@@ -47,16 +47,24 @@ class VRPEnvironment:
                 total_distance=row.get('total_distance', 0),
                 order_count=row.get('order_count', 0) if hasattr(row, 'get') else (row['order_count'] if 'order_count' in row else 0),
             )
-        # reset вызывается извне (в шедулере), чтобы не делать побочных эффектов в конструкторе
+                                                                                               
 
     def reset(self):
         self.courier_states: Dict[int, CourierState] = {}
-        for courier_id in range(len(self.couriers_df)):
-            self.courier_states[courier_id] = CourierState(courier_id, self.warehouse_id)
+                                                                         
+        try:
+            if hasattr(self.couriers_df, 'columns') and ('ID' in self.couriers_df.columns):
+                courier_ids = [int(cid) for cid in self.couriers_df['ID'].to_list()]
+            else:
+                courier_ids = list(range(len(self.couriers_df)))
+        except Exception:
+            courier_ids = list(range(len(self.couriers_df)))
+        for courier_id in courier_ids:
+            self.courier_states[int(courier_id)] = CourierState(int(courier_id), self.warehouse_id)
         self.available_polygons: List[int] = [row['MpId'] for row in self.polygons_df.iter_rows(named=True) if row['MpId'] != 0]
         self.current_time = 0
-        # Не очищаем cost_cache между эпизодами — сохраняем кэш для ускорения
-        # Предрасчёт статической полезности (склад -> полигон)
+                                                                             
+                                                              
         static_scores: List[Tuple[int, float]] = []
         for pid in self.available_polygons:
             try:
@@ -68,7 +76,7 @@ class VRPEnvironment:
             static_scores.append((pid, util))
         static_scores.sort(key=lambda x: x[1], reverse=True)
         self._static_utility_sorted = [pid for pid, _ in static_scores]
-        # Инвентаризация для отладки
+                                    
         logger.debug(f"reset(): доступных полигонов={len(self.available_polygons)}; первые={self.available_polygons[:10]}")
 
     def _get_polygon_info(self, polygon_id: int) -> PolygonInfo:
@@ -79,7 +87,7 @@ class VRPEnvironment:
         try:
             if isinstance(self.polygon_info, dict):
                 return self.polygon_info.get(polygon_id, PolygonInfo(polygon_id, 0, 0, 0))
-            # Если вдруг пришёл одиночный объект
+                                                
             if isinstance(self.polygon_info, PolygonInfo):
                 return self.polygon_info
         except Exception:
@@ -89,14 +97,14 @@ class VRPEnvironment:
     def get_available_actions(self, courier_id: int) -> List[int]:
         courier = self.courier_states[courier_id]
         actions: List[int] = []
-        # ограничим кандидатов топом по статической полезности
+                                                              
         candidates = []
         if self._static_utility_sorted:
             pool = self._static_utility_sorted[: min(self.candidate_pool_size, len(self._static_utility_sorted))]
-            # оставим только ещё доступные
+                                          
             pool_set = set(self.available_polygons)
             candidates = [pid for pid in pool if pid in pool_set]
-        # если по каким-то причинам нет кандидатов — вернёмся к полному перебору
+                                                                                
         scan_source = candidates if candidates else self.available_polygons
         for pid in scan_source:
             if self._can_assign_polygon(courier, pid):
@@ -151,13 +159,18 @@ class VRPEnvironment:
         can_continue = courier.current_time < self.max_time_per_courier
         all_times = [c.current_time for c in self.courier_states.values()]
         orders = getattr(poly, 'order_count', 0) or 0
+                                                                     
+        try:
+            remaining_orders = sum(max(0, int(self._get_polygon_info(pid).order_count or 0)) for pid in self.available_polygons)
+        except Exception:
+            remaining_orders = len(self.available_polygons)
         reward = calculate_reward(
             courier_time=courier.current_time,
             total_time=total_time,
             max_time=self.max_time_per_courier,
             orders=orders,
             all_courier_times=all_times,
-            remaining_polygons=len(self.available_polygons),
+            remaining_polygons=int(remaining_orders),
             violations=sum(1 for c in self.courier_states.values() if c.current_time > self.max_time_per_courier),
         )
         return reward, not can_continue
@@ -178,10 +191,15 @@ class VRPEnvironment:
 
     def calculate_global_objective(self) -> float:
         total_time = sum(c.current_time for c in self.courier_states.values())
-        unassigned_penalty = len(self.available_polygons) * 3000
+                                                                            
+        try:
+            unassigned_orders = sum(max(0, int(self._get_polygon_info(pid).order_count or 0)) for pid in self.available_polygons)
+        except Exception:
+            unassigned_orders = len(self.available_polygons)
+        unassigned_penalty = int(unassigned_orders) * 3000
         violations = sum(1 for c in self.courier_states.values() if c.current_time > self.max_time_per_courier)
         violation_penalty = violations * 10000
-        return total_time + unassigned_penalty + violation_penalty
+        return float(total_time) + float(unassigned_penalty) + float(violation_penalty)
 
     def evaluate_assignment(self, assignment: Dict[int, List[int]]) -> float:
         """Симуляция эпизода по фиксированному назначению полигонов.
@@ -190,13 +208,13 @@ class VRPEnvironment:
         используя обычную динамику среды, затем возвращает значение глобальной цели.
         """
         self.reset()
-        # Перебор по наименьшему текущему времени для баланса
+                                                             
         progress = True
-        # Подготовим итераторы по полигоном на курьера
+                                                      
         pending: Dict[int, List[int]] = {cid: lst.copy() for cid, lst in assignment.items()}
         while progress:
             progress = False
-            # активные курьеры
+                              
             active = [cid for cid in pending if pending[cid] and self.courier_states[cid].current_time < self.max_time_per_courier]
             if not active:
                 break
@@ -206,16 +224,16 @@ class VRPEnvironment:
                     continue
                 pid = pending[cid][0]
                 if pid not in self.available_polygons:
-                    # уже взят другим курьером или не существует
+                                                                
                     pending[cid].pop(0)
                     continue
-                # проверим ограничение по времени
+                                                 
                 cost = self._calculate_polygon_total_time(cid, pid, self.courier_states[cid].current_position)
                 if cost >= float('inf') or self.courier_states[cid].current_time + cost > self.max_time_per_courier:
-                    # пропускаем этот полигон
+                                             
                     pending[cid].pop(0)
                     continue
-                # выполним действие
+                                   
                 self.execute_action(cid, pid)
                 pending[cid].pop(0)
                 progress = True

@@ -22,7 +22,13 @@ class ReinforcementScheduler:
             polygons_df, couriers_df, max_time_per_courier,
             distance_provider, courier_service_times
         )
-        # Явный reset один раз
+                                                       
+        try:
+            wh_id = int(getattr(distance_provider, 'warehouse_id', 0))
+            self.environment.warehouse_id = wh_id
+        except Exception:
+            pass
+                              
         self.environment.reset()
         self.use_parallel = use_parallel
         self.num_workers = num_workers
@@ -39,6 +45,11 @@ class ReinforcementScheduler:
             self.environment.distance_provider,
             self.environment.courier_service_times
         )
+                                                
+        try:
+            env_copy.warehouse_id = int(getattr(self.environment, 'warehouse_id', 0))
+        except Exception:
+            pass
         env_copy.reset()
         episode_reward = 0
         step_count = 0
@@ -162,12 +173,14 @@ class ReinforcementScheduler:
         logger.info(f"Создана матрица состояний: {self.state_matrix.shape}")
 
     def _train_parallel(self, episodes: int, max_steps_per_episode: int) -> Dict[int, List[int]]:
-        # Формируем контекст для безопасных воркеров
+                                                    
         base_context: Dict[str, Any] = {
             'polygons_df': self.environment.polygons_df.to_dicts(),
             'couriers_df': self.environment.couriers_df.to_dicts(),
             'max_time_per_courier': self.environment.max_time_per_courier,
-            'polygon_info': self.environment.polygon_info,
+                                                                                           
+                                                                                     
+            'polygon_info': getattr(self.environment.distance_provider, 'polygon_info', {}),
             'courier_service_times': self.environment.courier_service_times,
             'durations_db_path': getattr(self.environment.distance_provider, 'durations_db_path', ''),
             'ports_db_path': getattr(self.environment.distance_provider, 'ports_db_path', ''),
@@ -189,6 +202,10 @@ class ReinforcementScheduler:
             self.environment.distance_provider,
             self.environment.courier_service_times
         )
+        try:
+            env_copy.warehouse_id = int(getattr(self.environment, 'warehouse_id', 0))
+        except Exception:
+            pass
         env_copy.reset()
         episode_reward = 0
         step_count = 0
@@ -269,7 +286,17 @@ class ReinforcementScheduler:
             top_k=50,
         )
         for cid, pids in warm_assignment.items():
-            state = self.state_encoder.encode_state(self.environment.get_environment_state(), cid)
+                                                                                     
+                                                                        
+            if cid not in self.environment.courier_states:
+                try:
+                    env_ids = list(self.environment.courier_states.keys())
+                    mapped_cid = env_ids[cid] if 0 <= cid < len(env_ids) else cid
+                except Exception:
+                    mapped_cid = cid
+            else:
+                mapped_cid = cid
+            state = self.state_encoder.encode_state(self.environment.get_environment_state(), mapped_cid)
             for pid in pids:
                 self.agent.q_table[(state, pid)] = self.agent.q_table.get((state, pid), 0.0) + 1.0
 

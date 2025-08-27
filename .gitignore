@@ -1,8 +1,25 @@
-# Ignore data and dbs
-ml_ozon_logistic/
-logistic/
-logistics/
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# Logs
+*.log
+*.sqlite-wal
+*.sqlite-shm
 *.sqlite
-**/*.sqlite
-*.db
-**/*.db
+
+# Solutions / reports
+solution*.json
+validation_report.json
+
+# Datasets (do not track raw dataset JSONs)
+ml_ozon_logistic/*.json
+
+# Nested repos
+logistics/
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store

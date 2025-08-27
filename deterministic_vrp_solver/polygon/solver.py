@@ -32,7 +32,14 @@ class PolygonTSPSolver:
             return order_ids, d
         if n > self.max_exact_size:
             return self._solve_heuristic(order_ids, start_id)
-        return self._solve_exact(order_ids, start_id)
+                                                                         
+        start_index = 0
+        if start_id is not None:
+            try:
+                start_index = order_ids.index(start_id)
+            except ValueError:
+                start_index = 0
+        return self._solve_exact(order_ids, start_index)
 
     def _solve_exact(self, order_ids: List[int], start_id: int = None) -> Tuple[List[int], float]:
         n = len(order_ids)
